@@ -1,12 +1,14 @@
-// Jenkinsfile — CI/CD for a FastAPI app
-// Flow: checkout -> venv/deps -> lint -> test -> build image -> push to ECR -> deploy to k8s
+// Jenkinsfile — CI for a FastAPI app
+// Flow: checkout -> venv/deps -> lint -> test -> build image -> push to ECR
 //
-// Required Jenkins setup (see notes at bottom):
-//   - Agent with: python3, docker, aws-cli v2, kubectl
+// This is CI only. Deployment to Kubernetes is handled separately by ArgoCD
+// (GitOps, pull-based) once that's set up -- this pipeline's job ends at ECR.
+//
+// Required Jenkins setup:
+//   - Agent with: python3, docker, aws-cli v2
 //   - Credentials:
-//       'aws-ecr-creds'   -> AWS Access Key ID / Secret (Username/Password credential type)
-//       'kubeconfig-prod' -> Secret file credential containing your kubeconfig
-//   - Jenkins Pipeline plugins: Docker Pipeline, Pipeline Utility Steps
+//       'aws-ecr-creds' -> AWS Access Key ID / Secret (Username/Password credential type)
+//   - Jenkins Pipeline plugins: Docker Pipeline
 
 pipeline {
     agent any
@@ -19,16 +21,12 @@ pipeline {
     }
 
     environment {
-        AWS_REGION       = 'us-east-1'                                    // <-- change
+        AWS_REGION       = 'ap-south-1'                                    // <-- change
         AWS_ACCOUNT_ID   = '859925121963'                                 // <-- change
         ECR_REPO         = 'fast-api'                                  // <-- change
         ECR_REGISTRY     = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         IMAGE_TAG        = "${env.BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
         IMAGE_URI        = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
-
-        K8S_NAMESPACE    = 'default'                                      // <-- change
-        K8S_DEPLOYMENT   = 'fastapi-app'                                  // <-- change
-        K8S_CONTAINER    = 'fastapi-app'                                  // <-- change
     }
 
     stages {
@@ -97,25 +95,16 @@ pipeline {
             }
         }
 
-        stage('Deploy to Kubernetes') {
-            steps {
-                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                    sh '''
-                        kubectl set image deployment/${K8S_DEPLOYMENT} \
-                            ${K8S_CONTAINER}=${IMAGE_URI} \
-                            -n ${K8S_NAMESPACE}
-
-                        kubectl rollout status deployment/${K8S_DEPLOYMENT} \
-                            -n ${K8S_NAMESPACE} --timeout=120s
-                    '''
-                }
-            }
-        }
+        // No deploy stage here on purpose.
+        // Deployment to Kubernetes will be handled by ArgoCD (GitOps pull-based),
+        // watching a manifests repo. When that's set up, add a stage here that
+        // bumps the image tag in the manifests repo and pushes that commit --
+        // NOT a direct kubectl/kubeconfig step.
     }
 
     post {
         success {
-            echo "Deployed ${IMAGE_URI} to ${K8S_NAMESPACE}/${K8S_DEPLOYMENT} successfully."
+            echo "Built and pushed ${IMAGE_URI} to ECR successfully."
         }
         failure {
             echo "Pipeline failed at stage: ${env.STAGE_NAME}"
