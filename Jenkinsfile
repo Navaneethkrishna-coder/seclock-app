@@ -2,9 +2,14 @@ pipeline {
 
     agent any
 
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
     environment {
         AWS_REGION = 'ap-south-1'
-        AWS_ACCOUNT_ID = '859925121963'
+        AWS_ACCOUNT_ID = '13.233.122.108'
 
         ECR_REPOSITORY = 'seclock'
         IMAGE_TAG = "${BUILD_NUMBER}"
@@ -24,15 +29,24 @@ pipeline {
         stage('Python Setup') {
             steps {
                 sh '''
-                    python3 --version
-                    pip3 --version
+                    set -e
 
-                    python3 -m venv venv
+                    echo "Python:"
+                    python3 --version
+
+                    echo "Pip:"
+                    python3 -m pip --version
+
+                    echo "Creating virtual environment..."
+ i                   python3 -m venv venv
+
                     . venv/bin/activate
 
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
-                    pip install pytest bandit
+                    python -m pip install --upgrade pip
+                    python -m pip install -r requirements.txt
+
+                    echo "Installing security/testing tools..."
+                    python -m pip install pytest bandit
                 '''
             }
         }
@@ -40,12 +54,16 @@ pipeline {
         stage('Unit Tests') {
             steps {
                 sh '''
+                    set -e
+
                     . venv/bin/activate
 
-                    if [ -d "tests" ]; then
+                    if [ -f "test_e2e.py" ]; then
+                        pytest -v test_e2e.py
+                    elif [ -d "tests" ]; then
                         pytest -v
                     else
-                        echo "No tests directory found - skipping tests"
+                        echo "No tests found"
                     fi
                 '''
             }
@@ -112,13 +130,12 @@ pipeline {
         stage('Update Kubernetes Manifest') {
             steps {
                 sh '''
-                    echo "Image successfully pushed:"
-                    echo "${IMAGE_NAME}"
+                    echo "======================================"
+                    echo "Image pushed successfully"
+                    echo "Image: ${IMAGE_NAME}"
+                    echo "======================================"
 
-                    # This stage will later update your GitOps repository
-                    # for Argo CD deployment.
-
-                    echo "Kubernetes image: ${IMAGE_NAME}"
+                    echo "GitOps deployment will be configured later."
                 '''
             }
         }
