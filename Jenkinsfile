@@ -26,7 +26,7 @@ pipeline {
         IMAGE_TAG        = "${env.BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
         IMAGE_URI        = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
 
-        K8S_NAMESPACE    = 'seclock'                                      // <-- change
+        K8S_NAMESPACE    = 'default'                                      // <-- change
         K8S_DEPLOYMENT   = 'fastapi-app'                                  // <-- change
         K8S_CONTAINER    = 'fastapi-app'                                  // <-- change
     }
@@ -46,7 +46,7 @@ pipeline {
                     . .venv/bin/activate
                     pip install --upgrade pip
                     pip install -r requirements.txt
-                    pip install pytest pytest-cov ruff
+                    pip install pytest pytest-cov ruff httpx2
                 '''
             }
         }
@@ -55,9 +55,8 @@ pipeline {
             steps {
                 sh '''
                     . .venv/bin/activate
-                    ruff check . || true
+                    ruff check .
                 '''
-                // Remove "|| true" once your codebase is clean, so lint failures block the build.
             }
         }
 
