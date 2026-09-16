@@ -1,120 +1,234 @@
 pipeline {
+
     agent any
 
-    // ---------------------------------------------------------------------
-    // Configure these to match your environment
-    // ---------------------------------------------------------------------
     environment {
-        AWS_ACCOUNT_ID   = '859925121963'                  // <-- your AWS account id
-        AWS_REGION       = 'ap-south-1'                    // <-- your AWS region
-        ECR_REPO_NAME    = 'fast-api'                   // <-- ECR repo name (create it beforehand)
-        ECR_REGISTRY     = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-        IMAGE_NAME       = "${ECR_REGISTRY}/${ECR_REPO_NAME}"
-        IMAGE_TAG        = "${env.BUILD_NUMBER}"
-        K8S_NAMESPACE    = 'default'
-        K8S_DEPLOYMENT   = 'seclock-app'
-        K8S_CONTAINER    = 'seclock-app'
-        // Jenkins credential IDs (create these in Jenkins > Manage Credentials)
-        AWS_CRED_ID      = 'AKIA4QN4IBOVUOJ3JJY7'                 // AWS Access Key/Secret with ECR push rights
-        KUBECONFIG_CRED  = 'k8s-kubeconfig'                // "Secret file" credential holding kubeconfig
+        AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = '859925121963'
+
+        ECR_REPOSITORY = 'fast-api'
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+        DOCKER_IMAGE = "${ECR_REGISTRY}/${ECR_REPOSITORY}"
+
+        SONAR_PROJECT_KEY = 'seclock-app'
+        SONAR_PROJECT_NAME = 'SECLOCK'
     }
 
     options {
-        timestamps()
-        disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '15'))
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        skipDefaultCheckout(true)
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                git branch: 'main',
-                    url: 'https://github.com/Navaneethkrishna-coder/seclock-app.git'
+                checkout scm
+
+                sh '''
+                    echo "======================================"
+                    echo "Checkout successful"
+                    echo "======================================"
+
+                    python3 --version
+
+                    echo "Project files:"
+                    ls -la
+                '''
+            }
+        }
+
+        stage('Python Setup') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "Installing Python dependencies..."
+
+                    python3 -m pip install --upgrade pip
+
+                    python3 -m pip install -r requirements.txt
+
+                    python3 -m pip install pytest bandit
+                '''
+            }
+        }
+
+        stage('Build and Test') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "======================================"
+                    echo "Running Tests"
+                    echo "======================================"
+
+                    if [ -f "test_e2e.py" ]; then
+                        pytest -v test_e2e.py
+                    elif [ -d "tests" ]; then
+                        pytest -v
+                    else
+                        echo "No tests found"
+                    fi
+                '''
+            }
+        }
+
+        stage('Security Scan - Bandit') {
+            steps {
+                sh '''
+                    echo "======================================"
+                    echo "Running Bandit"
+                    echo "======================================"
+
+                    bandit -r . \
+                        --exclude ./venv \
+                        -f json \
+                        -o bandit-report.json || true
+
+                    echo "Bandit scan completed"
+                '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube') {
+
+                    sh '''
+                        echo "======================================"
+                        echo "Running SonarQube"
+                        echo "======================================"
+
+                        sonar-scanner \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
+                            -Dsonar.sources=. \
+                            -Dsonar.exclusions="__pycache__/**,sample_certificates/**,static/**"
+                    '''
+                }
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                sh """
-                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest .
-                """
+                sh '''
+                    echo "======================================"
+                    echo "Building Docker Image"
+                    echo "======================================"
+
+                    docker build \
+                        -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
+                        -t ${DOCKER_IMAGE}:latest \
+                        .
+
+                    docker images
+                '''
             }
         }
 
-        // Optional: run tests inside the built image before pushing.
-        // Uncomment and adapt the entrypoint/command for your stack.
-        /*
-        stage('Test') {
+        stage('Docker Image Scan') {
             steps {
-                sh "docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} <your-test-command>"
+                sh '''
+                    echo "======================================"
+                    echo "Running Trivy Scan"
+                    echo "======================================"
+
+                    trivy image \
+                        --severity HIGH,CRITICAL \
+                        --exit-code 0 \
+                        ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    echo "Trivy scan completed"
+                '''
             }
         }
-        */
 
-        stage('Login to ECR') {
+        stage('Login to AWS ECR') {
             steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: "${AWS_CRED_ID}"
-                ]]) {
-                    sh """
-                        aws ecr get-login-password --region ${AWS_REGION} \
-                          | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                    """
-                }
+                sh '''
+                    echo "======================================"
+                    echo "Logging into AWS ECR"
+                    echo "======================================"
+
+                    aws ecr get-login-password \
+                        --region ${AWS_REGION} | \
+                    docker login \
+                        --username AWS \
+                        --password-stdin ${ECR_REGISTRY}
+
+                    echo "ECR login successful"
+                '''
             }
         }
 
         stage('Push Image to ECR') {
             steps {
-                sh """
-                    docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                    docker push ${IMAGE_NAME}:latest
-                """
+                sh '''
+                    echo "======================================"
+                    echo "Pushing Image to ECR"
+                    echo "======================================"
+
+                    docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                    docker push ${DOCKER_IMAGE}:latest
+
+                    echo "======================================"
+                    echo "Image pushed successfully"
+                    echo "======================================"
+
+                    echo "${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                    echo "${DOCKER_IMAGE}:latest"
+                '''
             }
         }
 
-        stage('Deploy to Kubernetes') {
-            steps {
-                withCredentials([file(credentialsId: "${KUBECONFIG_CRED}", variable: 'KUBECONFIG_FILE')]) {
-                    sh """
-                        export KUBECONFIG=\$KUBECONFIG_FILE
-
-                        # Make sure namespace + base manifests exist (idempotent apply)
-                        kubectl apply -f k8s/deployment.yaml -n ${K8S_NAMESPACE}
-                        kubectl apply -f k8s/service.yaml -n ${K8S_NAMESPACE}
-
-                        # Point the deployment at the freshly built, immutable tag
-                        kubectl set image deployment/${K8S_DEPLOYMENT} \
-                          ${K8S_CONTAINER}=${IMAGE_NAME}:${IMAGE_TAG} \
-                          -n ${K8S_NAMESPACE}
-
-                        kubectl rollout status deployment/${K8S_DEPLOYMENT} \
-                          -n ${K8S_NAMESPACE} --timeout=180s
-                    """
-                }
-            }
-        }
-
-        stage('Cleanup Local Images') {
-            steps {
-                sh """
-                    docker rmi ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest || true
-                """
-            }
-        }
     }
 
     post {
+
         success {
-            echo "Deployed ${IMAGE_NAME}:${IMAGE_TAG} to ${K8S_DEPLOYMENT} successfully."
+            echo """
+            ======================================
+            SECLOCK CI PIPELINE SUCCESSFUL
+            ======================================
+
+            ECR Repository:
+            ${ECR_REPOSITORY}
+
+            Region:
+            ${AWS_REGION}
+
+            Image:
+            ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+            Latest:
+            ${DOCKER_IMAGE}:latest
+
+            ======================================
+            """
         }
+
         failure {
-            echo "Pipeline failed. Check the stage logs above."
+            echo '''
+            ======================================
+            SECLOCK PIPELINE FAILED
+            ======================================
+
+            Check the failed stage above.
+
+            ======================================
+            '''
         }
+
         always {
-            sh 'docker logout ${ECR_REGISTRY} || true'
+            sh '''
+                docker image prune -f || true
+            '''
+
+            cleanWs()
         }
     }
 }
