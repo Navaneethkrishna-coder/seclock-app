@@ -9,7 +9,7 @@ pipeline {
 
     environment {
         AWS_REGION = 'ap-south-1'
-        AWS_ACCOUNT_ID = '13.233.122.108'
+        AWS_ACCOUNT_ID = '859925121963'
 
         ECR_REPOSITORY = 'seclock'
         IMAGE_TAG = "${BUILD_NUMBER}"
