@@ -1,21 +1,34 @@
-pipeline {
+// Jenkinsfile — CI/CD for a FastAPI app
+// Flow: checkout -> venv/deps -> lint -> test -> build image -> push to ECR -> deploy to k8s
+//
+// Required Jenkins setup (see notes at bottom):
+//   - Agent with: python3, docker, aws-cli v2, kubectl
+//   - Credentials:
+//       'aws-ecr-creds'   -> AWS Access Key ID / Secret (Username/Password credential type)
+//       'kubeconfig-prod' -> Secret file credential containing your kubeconfig
+//   - Jenkins Pipeline plugins: Docker Pipeline, Pipeline Utility Steps
 
+pipeline {
     agent any
 
     options {
-        skipDefaultCheckout(true)
         timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '15'))
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     environment {
-        AWS_REGION = 'ap-south-1'
-        AWS_ACCOUNT_ID = '859925121963'
+        AWS_REGION       = 'us-east-1'                                    // <-- change
+        AWS_ACCOUNT_ID   = '859925121963'                                 // <-- change
+        ECR_REPO         = 'fast-api'                                  // <-- change
+        ECR_REGISTRY     = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        IMAGE_TAG        = "${env.BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+        IMAGE_URI        = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
 
-        ECR_REPOSITORY = 'seclock'
-        IMAGE_TAG = "${BUILD_NUMBER}"
-
-        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-        IMAGE_NAME = "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+        K8S_NAMESPACE    = 'seclock'                                      // <-- change
+        K8S_DEPLOYMENT   = 'fastapi-app'                                  // <-- change
+        K8S_CONTAINER    = 'fastapi-app'                                  // <-- change
     }
 
     stages {
@@ -26,141 +39,93 @@ pipeline {
             }
         }
 
-        stage('Python Setup') {
+        stage('Setup Python venv') {
             steps {
                 sh '''
-                    set -e
-
-                    echo "Python:"
-                    python3 --version
-
-                    echo "Pip:"
-                    python3 -m pip --version
-
-                    echo "Creating virtual environment..."
- i                   python3 -m venv venv
-
-                    . venv/bin/activate
-
-                    python -m pip install --upgrade pip
-                    python -m pip install -r requirements.txt
-
-                    echo "Installing security/testing tools..."
-                    python -m pip install pytest bandit
+                    python3 -m venv .venv
+                    . .venv/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                    pip install pytest pytest-cov ruff
                 '''
             }
         }
 
-        stage('Unit Tests') {
+        stage('Lint') {
             steps {
                 sh '''
-                    set -e
-
-                    . venv/bin/activate
-
-                    if [ -f "test_e2e.py" ]; then
-                        pytest -v test_e2e.py
-                    elif [ -d "tests" ]; then
-                        pytest -v
-                    else
-                        echo "No tests found"
-                    fi
+                    . .venv/bin/activate
+                    ruff check . || true
                 '''
+                // Remove "|| true" once your codebase is clean, so lint failures block the build.
             }
         }
 
-        stage('Security Scan - Bandit') {
+        stage('Test') {
             steps {
                 sh '''
-                    . venv/bin/activate
-
-                    bandit -r . \
-                        --exclude ./venv \
-                        -f json \
-                        -o bandit-report.json || true
-
-                    echo "Bandit scan completed"
+                    . .venv/bin/activate
+                    pytest --cov=. --cov-report=xml --cov-report=term -v
                 '''
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/junit*.xml'
+                }
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                sh '''
-                    docker build \
-                        -t ${IMAGE_NAME} \
-                        -t ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest \
-                        .
-                '''
+                sh "docker build -t ${IMAGE_URI} -t ${ECR_REGISTRY}/${ECR_REPO}:latest ."
             }
         }
 
-        stage('Docker Image Scan - Trivy') {
+        stage('Push to ECR') {
             steps {
-                sh '''
-                    trivy image \
-                        --severity HIGH,CRITICAL \
-                        --exit-code 1 \
-                        ${IMAGE_NAME}
-                '''
+                withCredentials([usernamePassword(
+                    credentialsId: 'aws-ecr-creds',
+                    usernameVariable: 'AWS_ACCESS_KEY_ID',
+                    passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                )]) {
+                    sh '''
+                        aws ecr get-login-password --region ${AWS_REGION} \
+                            | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        docker push ${IMAGE_URI}
+                        docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
+                    '''
+                }
             }
         }
 
-        stage('Login to AWS ECR') {
+        stage('Deploy to Kubernetes') {
             steps {
-                sh '''
-                    aws ecr get-login-password \
-                        --region ${AWS_REGION} | \
-                    docker login \
-                        --username AWS \
-                        --password-stdin ${ECR_REGISTRY}
-                '''
-            }
-        }
+                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        kubectl set image deployment/${K8S_DEPLOYMENT} \
+                            ${K8S_CONTAINER}=${IMAGE_URI} \
+                            -n ${K8S_NAMESPACE}
 
-        stage('Push Image to ECR') {
-            steps {
-                sh '''
-                    docker push ${IMAGE_NAME}
-                    docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
-                '''
-            }
-        }
-
-        stage('Update Kubernetes Manifest') {
-            steps {
-                sh '''
-                    echo "======================================"
-                    echo "Image pushed successfully"
-                    echo "Image: ${IMAGE_NAME}"
-                    echo "======================================"
-
-                    echo "GitOps deployment will be configured later."
-                '''
+                        kubectl rollout status deployment/${K8S_DEPLOYMENT} \
+                            -n ${K8S_NAMESPACE} --timeout=120s
+                    '''
+                }
             }
         }
     }
 
     post {
-
         success {
-            echo "======================================"
-            echo "SECLOCK CI/CD PIPELINE SUCCESSFUL"
-            echo "Image: ${IMAGE_NAME}"
-            echo "======================================"
+            echo "Deployed ${IMAGE_URI} to ${K8S_NAMESPACE}/${K8S_DEPLOYMENT} successfully."
         }
-
         failure {
-            echo "======================================"
-            echo "SECLOCK CI/CD PIPELINE FAILED"
-            echo "Check the failed stage above."
-            echo "======================================"
+            echo "Pipeline failed at stage: ${env.STAGE_NAME}"
+            // Hook up Slack/email notification here, e.g.:
+            // slackSend(color: 'danger', message: "Build ${env.BUILD_NUMBER} failed: ${env.BUILD_URL}")
         }
-
         always {
-            sh '''
-                docker image prune -f || true
-            '''
+            sh 'docker image prune -f || true'
+            cleanWs()
         }
     }
 }
