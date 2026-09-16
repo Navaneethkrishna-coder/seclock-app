@@ -1,45 +1,45 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: seclock-app
+  name: seclock
   labels:
-    app: seclock-app
+    app: seclock
 spec:
-  replicas: 2                     # one pod per node, adjust as needed
+  replicas: 2
+
   selector:
     matchLabels:
-      app: seclock-app
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+      app: seclock
+
   template:
     metadata:
       labels:
-        app: seclock-app
+        app: seclock
+
     spec:
-      # Spread the two replicas across your two worker nodes
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchExpressions:
-                    - key: app
-                      operator: In
-                      values:
-                        - seclock-app
-                topologyKey: kubernetes.io/hostname
-      imagePullSecrets:
-        - name: ecr-registry-secret   # see notes below on how to create this
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
       containers:
-        - name: seclock-app
-          image: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/seclock-app:latest
-          imagePullPolicy: Always
+        - name: seclock
+          image: YOUR_ECR_REPOSITORY/seclock:1.0
+
+          imagePullPolicy: IfNotPresent
+
           ports:
-            - containerPort: 8080     # <-- change to the port your app listens on
+            - containerPort: 8000
+              protocol: TCP
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
           resources:
             requests:
               cpu: "100m"
@@ -47,15 +47,37 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+
           readinessProbe:
             httpGet:
               path: /
-              port: 8080
-            initialDelaySeconds: 10
+              port: 8000
+            initialDelaySeconds: 5
             periodSeconds: 10
+
           livenessProbe:
             httpGet:
               path: /
-              port: 8080
-            initialDelaySeconds: 20
+              port: 8000
+            initialDelaySeconds: 15
             periodSeconds: 20
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: seclock-service
+  labels:
+    app: seclock
+
+spec:
+  selector:
+    app: seclock
+
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+
+  type: ClusterIP
