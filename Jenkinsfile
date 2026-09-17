@@ -19,9 +19,9 @@ pipeline {
     agent any
 
     environment {
-        AWS_ACCOUNT_ID  = '123456789012'                 // <-- replace with your AWS account ID
+        AWS_ACCOUNT_ID  = '859925121963'                 // <-- replace with your AWS account ID
         AWS_REGION      = 'us-east-1'                     // ECR lives here (cluster is in ap-south-1)
-        ECR_REPO        = 'seclock'
+        ECR_REPO        = 'fast-api'
         ECR_REGISTRY    = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         IMAGE_TAG       = "${env.BUILD_NUMBER}"
         FULL_IMAGE      = "${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
