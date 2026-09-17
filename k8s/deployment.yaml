@@ -23,7 +23,7 @@ spec:
         - name: ecr-registry-secret   # see setup notes: this token expires every 12h
       containers:
         - name: seclock
-          image: __IMAGE__            # Jenkins substitutes this with <account>.dkr.ecr.us-east-1.amazonaws.com/seclock:<tag>
+          image: 859925121963.dkr.ecr.us-east-1.amazonaws.com/fast-api:latest           # Jenkins substitutes this with <account>.dkr.ecr.us-east-1.amazonaws.com/seclock:<tag>
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
