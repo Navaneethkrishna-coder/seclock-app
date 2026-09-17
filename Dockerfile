@@ -1,46 +1,55 @@
-# Use a lightweight Python image
-FROM python:3.11-slim
+# ============================================================
+# Seclock — FastAPI app image
+# Multi-stage build: compile deps in "builder", copy only the
+# installed packages + app source into a slim runtime image.
+# ============================================================
 
-# Prevent Python from creating .pyc files
-# and ensure logs are sent directly to stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# ---------- Build stage ----------
+FROM python:3.12-slim AS builder
 
-# Application directory inside the container
+WORKDIR /build
+
+# Build tools needed to compile any deps without prebuilt wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libjpeg-dev \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# ---------- Runtime stage ----------
+FROM python:3.12-slim
+
 WORKDIR /app
 
-# Install system dependencies
-# Build tools are useful for Python packages that may need compilation
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        gcc \
-        libffi-dev \
-        && rm -rf /var/lib/apt/lists/*
+# Runtime shared libs required by Pillow
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libjpeg62-turbo \
+        zlib1g \
+        curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 appuser
 
-# Copy dependency file first for Docker layer caching
-COPY requirements.txt .
+# Bring in the packages installed in the builder stage
+COPY --from=builder /root/.local /home/appuser/.local
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# App source (explicit list keeps __pycache__/tests out of the image)
+COPY main.py crypto_engine.py ocr_engine.py audit_ledger.py generate_certificates.py ./
+COPY static ./static
+COPY sample_certificates ./sample_certificates
 
-# Copy application source
-COPY main.py .
-COPY crypto_engine.py .
-COPY ocr_engine.py .
-COPY audit_ledger.py .
-COPY static/ ./static/
-COPY sample_certificates/ ./sample_certificates/
+ENV PATH=/home/appuser/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# Create a non-root user
-RUN useradd --create-home --shell /bin/bash appuser && \
-    chown -R appuser:appuser /app
-
-# Run the application as non-root
+RUN chown -R appuser:appuser /app
 USER appuser
 
-# FastAPI port
-EXPOSE 8000
+EXPOSE 8080
 
-# Start FastAPI
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://127.0.0.1:8080/api/state || exit 1
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
