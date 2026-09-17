@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.git
+.gitignore
+k8s/
+Jenkinsfile
+test_e2e.py
+README.md
+*.md
